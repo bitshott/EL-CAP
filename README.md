@@ -33,7 +33,7 @@ EL-CAP is a two-stage **retrieval** → **scoring** system with multimodal encod
       │  FAISS / ChromaDB   │                 │  DuckDB / Postgres  │
       │  {id, h_mol, meta}  │                 │  props, labels, …   │
       └──────────┬──────────┘                 └──────────┬──────────┘
-                 │                                         │
+                 │                                       │
                  │  (online query)
                  ▼
         ┌──────────────────────┐    1) Retrieval (fast, approximate)
