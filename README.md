@@ -1,2 +1,138 @@
 # EL-CAP
 Evidence-Linked, Context-Aware Molecular Prioritization
+
+**EL-CAP** is an intelligent platform that transforms the way pharmaceutical and chemical companies discover and prioritize new molecules.  
+By combining **graph neural networks (GNN)** for molecular structure analysis with **transformer-based NLP** for understanding scientific context, EL-CAP delivers **evidence-linked, context-aware rankings** of potential drug candidates.  
+
+Whether you start with a **research question**, a **candidate molecule**, or **both**, EL-CAP can:  
+- 🚀 Search millions of compounds in seconds using a **vector database** (FAISS / ChromaDB)  
+- 📚 Link every result to **real-world evidence**: assays, publications, patents  
+- 🧪 Predict **affinity**, **ADMET**, **novelty**, and **safety risks** through multi-task learning  
+- 📊 Generate a single **composite score** to guide decision-making  
+
+**From massive chemical libraries to ranked, evidence-backed shortlists — in one step.**
+EL-CAP is a two-stage **retrieval** → **scoring** system with multimodal encoders (GNN for molecules, Transformer for text), a vector store for fast candidate recall, and multi-task heads plus a meta-model for final prioritization.
+## Architecture review
+
+                  ┌────────────────────────────┐
+                  │        Data Sources        │
+                  │  ChEMBL / BindingDB / ... │
+                  │  PubMed / Patents / ELN   │
+                  └─────────────┬──────────────┘
+                                │  Ingestion & Curation (Airflow/Prefect)
+                                ▼
+                     ┌───────────────────────────┐
+                     │    Feature Extraction     │
+                     │  GNN → h_mol  |  NLP → h_txt
+                     └─────────┬─────────┬───────┘
+                               │         │
+                 ┌─────────────┘         └─────────────┐
+                 ▼                                     ▼
+      ┌─────────────────────┐                 ┌─────────────────────┐
+      │  Vector Store (ANN) │                 │  Tabular Store      │
+      │  FAISS / ChromaDB   │                 │  DuckDB / Postgres  │
+      │  {id, h_mol, meta}  │                 │  props, labels, …   │
+      └──────────┬──────────┘                 └──────────┬──────────┘
+                 │                                         │
+                 │  (online query)
+                 ▼
+        ┌──────────────────────┐    1) Retrieval (fast, approximate)
+        │   Query Encoding     │    ─────────────────────────────────
+        │  NLP → h_query       │ →  ANN top-K candidates (molecules, evidence)
+        └──────────┬───────────┘
+                   │   2) Scoring (accurate, neural)
+                   ▼
+           ┌──────────────────────────────┐
+           │      Fusion Layer            │  concat / gated / cross-attention
+           │  [h_mol, h_query, features]  │
+           └───────────┬──────────────────┘
+                       ▼
+           ┌──────────────────────────────┐
+           │     Multi-Task Heads (MLP)   │  Affinity | ADMET | Novelty/IP | Risk
+           └───────────┬──────────────────┘
+                       ▼
+           ┌──────────────────────────────┐
+           │   Meta-Model (LR/GBM)        │  composite priority score
+           └───────────┬──────────────────┘
+                       ▼
+           ┌──────────────────────────────┐
+           │  Ranked List + Evidence      │  snippets, citations, flags
+           └──────────────────────────────┘
+  # Search Modes
+
+EL-CAP exposes three complementary retrieval modes that feed the same scoring pipeline.
+
+---
+
+## 1) Text-Only (context → molecules)
+
+**Input:** free-form requirements (target, assay conditions, TPP constraints)  
+**Query vector:** `h_query = NLP(text)`  
+**Index queried:** molecular vectors `h_mol` (vector store)  
+
+**Use cases:** early triage from literature/TPP; no starting structure  
+**Pros:** broad recall from context; fastest ideation  
+**Cons:** semantic gap (text ↔ structure) without good contrastive pretraining  
+
+**Flow:**  
+text → NLP → h_query → ANN(h_query, {h_mol}) → top-K molecules → scoring → rank
+
+---
+
+## 2) Mol-Only (molecule → analogs/evidence)
+
+**Input:** candidate SMILES/SDF  
+**Query vector:** `h_mol* = GNN(mol)`  
+**Index queried:** molecular vectors (analogs) and/or text vectors (evidence)  
+
+**Use cases:** lead optimization, IP proximity, explainability  
+**Pros:** robust for scaffold-centric workflows  
+**Cons:** lacks explicit context; mitigated at scoring stage via fusion with optional text  
+
+**Flow:**  
+mol → GNN → h_mol* → ANN(h_mol*, {h_mol}) → top-K → (optional ANN to texts) → scoring → rank
+
+
+---
+
+## 3) Mol+Text (joint context)
+
+**Input:** molecule + requirements (target/assay/ADMET rules)  
+**Query vector:** `h_qry = g(h_mol*, h_query)` via concat/MLP or light cross-attention  
+**Index queried:** molecular (and optionally text) vectors using `h_qry`  
+
+**Use cases:** context-aware analog search; best Recall@K under constraints  
+**Pros:** highest relevance; aligns structure with requirements before scoring  
+**Cons:** most complex training (needs positive (mol, context) pairs and hard negatives)  
+
+**Flow:**  
+mol → GNN → h_mol*
+text → NLP → h_query
+h_qry = g(h_mol*, h_query) → ANN(h_qry) → top-K → scoring → rank
+
+---
+
+## Retrieval → Scoring bridge (common to all modes)
+
+- **Retrieval output:** top-K `mol_id` (+ cached `h_mol`, metadata, candidate evidence)  
+- **Scoring input:** `[h_mol, h_query, structured features]` → Fusion → Heads → Meta-Model  
+- **Output:** composite score + evidence cards (linked assay snippets, patents, PAINS/Lipinski/hERG/CYP flags)  
+
+---
+
+## KPIs by stage
+
+- **Retrieval:** Recall@K, NDCG@K, latency p95  
+- **Scoring:** RMSE (affinity), ROC-AUC/PR-AUC (ADMET/risk), calibration (ECE), cost/1k queries  
+
+---
+
+## Practical defaults
+
+- **Embedding dim:** 384–768; cosine similarity with L2-normalized vectors  
+- **ANN:** HNSW or IVF-PQ (GPU) depending on scale; K=200–1000 for rerank window  
+- **Fusion:** start with concat + MLP; upgrade to cross-attention for localized effects  
+- **Meta-model:** linear regression for interpretability; LightGBM for nonlinearity if needed
+
+
+
