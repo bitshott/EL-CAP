@@ -13,51 +13,82 @@ Whether you start with a **research question**, a **candidate molecule**, or **b
 **From massive chemical libraries to ranked, evidence-backed shortlists — in one step.**
 EL-CAP is a two-stage **retrieval** → **scoring** system with multimodal encoders (GNN for molecules, Transformer for text), a vector store for fast candidate recall, and multi-task heads plus a meta-model for final prioritization.
 ## Architecture review
+```mermaid
+flowchart TD
 
-                  ┌────────────────────────────┐
-                  │        Data Sources        │
-                  │  ChEMBL / BindingDB / ... │
-                  │  PubMed / Patents / ELN   │
-                  └─────────────┬──────────────┘
-                                │  Ingestion & Curation (Airflow/Prefect)
-                                ▼
-                     ┌───────────────────────────┐
-                     │    Feature Extraction     │
-                     │  GNN → h_mol  |  NLP → h_txt
-                     └─────────┬─────────┬───────┘
-                               │         │
-                 ┌─────────────┘         └─────────────┐
-                 ▼                                     ▼
-      ┌─────────────────────┐                 ┌─────────────────────┐
-      │  Vector Store (ANN) │                 │  Tabular Store      │
-      │  FAISS / ChromaDB   │                 │  DuckDB / Postgres  │
-      │  {id, h_mol, meta}  │                 │  props, labels, …   │
-      └──────────┬──────────┘                 └──────────┬──────────┘
-                 │                                       │
-                 │  (online query)
-                 ▼
-        ┌──────────────────────┐    1) Retrieval (fast, approximate)
-        │   Query Encoding     │    ─────────────────────────────────
-        │  NLP → h_query       │ →  ANN top-K candidates (molecules, evidence)
-        └──────────┬───────────┘
-                   │   2) Scoring (accurate, neural)
-                   ▼
-           ┌──────────────────────────────┐
-           │      Fusion Layer            │  concat / gated / cross-attention
-           │  [h_mol, h_query, features]  │
-           └───────────┬──────────────────┘
-                       ▼
-           ┌──────────────────────────────┐
-           │     Multi-Task Heads (MLP)   │  Affinity | ADMET | Novelty/IP | Risk
-           └───────────┬──────────────────┘
-                       ▼
-           ┌──────────────────────────────┐
-           │   Meta-Model (LR/GBM)        │  composite priority score
-           └───────────┬──────────────────┘
-                       ▼
-           ┌──────────────────────────────┐
-           │  Ranked List + Evidence      │  snippets, citations, flags
-           └──────────────────────────────┘
+%% ========== DATA INGESTION ==========
+subgraph A[Data Sources]
+  A1[ChEMBL / BindingDB] 
+  A2[PubMed / Patents] 
+  A3[ELN / Internal Data]
+end
+
+A --> B[Ingestion & Curation (Airflow/Prefect)]
+B --> C1[Molecule Standardization (RDKit)]
+B --> C2[Assay Normalization (units, targets, endpoints)]
+
+%% ========== ENCODERS ==========
+subgraph D[Feature Extraction Encoders]
+  D1[GNN Encoder\n(Graph Isomorphism Network / MPNN)\n+ SSL Pretraining\n+ ECFP fingerprints]
+  D2[Transformer Encoder\n(SciBERT / PubMedBERT)\n+ MLM domain tuning\n+ Slot Extraction: target, assay, units]
+end
+
+C1 --> D1
+C2 --> D2
+
+D1 --> E1[Molecular Embeddings h_mol (ℝ^512)]
+D2 --> E2[Text Embeddings h_txt (ℝ^768)]
+
+%% ========== VECTOR STORES ==========
+subgraph F[Storage Layers]
+  F1[Vector Store (FAISS IVF-HNSW-PQ)\nMol index: {mol_id, h_mol}]
+  F2[Text Passage Index (FAISS)\nEvidence index: {doc_id, h_txt}]
+  F3[Tabular Store (DuckDB/Postgres)\nAssay schema, labels, flags]
+end
+
+E1 --> F1
+E2 --> F2
+C2 --> F3
+
+%% ========== QUERY PIPELINE ==========
+subgraph Q[Query Handling]
+  Q1[User Query: text and/or molecule]
+  Q2[Mol Preproc → h_mol*]
+  Q3[Text Encode → h_query]
+  Q4[Mol+Text Fusion\nLinear proj / light MLP]
+end
+
+Q1 --> Q2
+Q1 --> Q3
+Q2 --> Q4
+Q3 --> Q4
+
+%% Retrieval
+Q3 --> R1[Text-only Retrieval\nANN search on {h_mol}]
+Q2 --> R2[Mol-only Retrieval\nANN search on {h_mol}]
+Q4 --> R3[Mol+Text Retrieval\nANN search on {h_mol}]
+
+R1 --> S1[Top-K Candidates]
+R2 --> S1
+R3 --> S1
+
+%% ========== RERANK / SCORING ==========
+subgraph S[Scoring Pipeline]
+  S1 --> S2[Cross-Encoder (Late Interaction / ColBERT-style)\nToken-level match text↔atoms]
+  S2 --> S3[Fusion Layer\n[h_mol, h_txt, features] → MLP]
+  S3 --> S4[Multi-Task Heads\nAffinity, ADMET, Risk, Novelty]
+  S4 --> S5[Meta-Model (LightGBM w/ monotonicity)\nComposite Priority Score]
+end
+
+%% ========== OUTPUT ==========
+S5 --> O1[Ranked List]
+S5 --> O2[Evidence Linking\nRetrieve passages from Text Index]
+F2 --> O2
+F3 --> O1
+
+O1 --> U1[User Dashboard / API]
+O2 --> U1
+```
   # Search Modes
 
 EL-CAP exposes three complementary retrieval modes that feed the same scoring pipeline.
