@@ -14,6 +14,7 @@ Whether you start with a **research question**, a **candidate molecule**, or **b
 EL-CAP is a two-stage **retrieval** → **scoring** system with multimodal encoders (GNN for molecules, Transformer for text), a vector store for fast candidate recall, and multi-task heads plus a meta-model for final prioritization.
 ## Architecture review
 ```mermaid
+
 flowchart TD
 
 %% ========== DATA INGESTION ==========
@@ -88,7 +89,9 @@ F3 --> O1
 
 O1 --> U1[User Dashboard / API]
 O2 --> U1
+
 ```
+
   # Search Modes
 
 EL-CAP exposes three complementary retrieval modes that feed the same scoring pipeline.
