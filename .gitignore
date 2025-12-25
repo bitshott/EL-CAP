@@ -1,0 +1,9 @@
+.venv
+.torch_geometric
+__pycache__
+.ipynb_checkpoints
+scibert_*
+checkpoint*
+*.pt
+mlruns
+data
